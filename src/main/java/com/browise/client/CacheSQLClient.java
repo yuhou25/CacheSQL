@@ -266,6 +266,7 @@ public class CacheSQLClient {
 	private Map<String, Object> parseObject(String s) {
 		Map<String, Object> map = new LinkedHashMap<String, Object>();
 		boolean inStr = false;
+		boolean valueQuoted = false;
 		StringBuilder buf = new StringBuilder();
 		String key = null;
 		boolean readingKey = true;
@@ -274,20 +275,23 @@ public class CacheSQLClient {
 			char c = s.charAt(i);
 			if (inStr) {
 				if (c == '\\') { if (++i < s.length()) buf.append(s.charAt(i)); }
-				else if (c == '"') { inStr = false; }
+				else if (c == '"') { inStr = false; if (!readingKey) valueQuoted = true; }
 				else buf.append(c);
 			} else {
 				if (c == '"') {
 					inStr = true;
-					if (!readingKey) { buf.setLength(0); }  // value string starts
+					if (!readingKey) { buf.setLength(0); valueQuoted = false; }
 				} else if (c == ':') {
 					if (readingKey) { key = buf.toString().trim(); buf.setLength(0); readingKey = false; }
 				} else if (c == ',' || c == '}') {
 					if (!readingKey) {
 						String val = buf.toString().trim();
-						if (key != null && !key.isEmpty()) map.put(key, parseRawValue(val));
+						if (key != null && !key.isEmpty()) {
+							map.put(key, valueQuoted ? val : parseNumber(val));
+						}
 						buf.setLength(0);
 						readingKey = true;
+						valueQuoted = false;
 					}
 				} else if (!Character.isWhitespace(c) || !readingKey) {
 					buf.append(c);
@@ -297,22 +301,20 @@ public class CacheSQLClient {
 		// Handle last value if no trailing comma
 		if (!readingKey && key != null && !key.isEmpty()) {
 			String val = buf.toString().trim();
-			if (!val.isEmpty()) map.put(key, parseRawValue(val));
+			if (!val.isEmpty()) map.put(key, valueQuoted ? val : parseNumber(val));
 		}
 		return map;
 	}
 
 	/**
-	 * 解析 JSON 值：引号为字符串，否则尝试 Long → Double → 原样返回
-	 * Parse JSON value: quoted = String, else try Long → Double → raw
+	 * 将未引号的 JSON 值解析为 Number
+	 * Parse unquoted JSON value as Number
 	 */
-	private Object parseRawValue(String s) {
+	private Object parseNumber(String s) {
 		if (s == null || s.isEmpty()) return null;
 		if (s.equals("null")) return null;
 		if (s.equals("true")) return Boolean.TRUE;
 		if (s.equals("false")) return Boolean.FALSE;
-		if (s.startsWith("\"") && s.endsWith("\""))
-			return s.substring(1, s.length() - 1);
 		try { return Long.parseLong(s); } catch (NumberFormatException e1) {}
 		try { return Double.parseDouble(s); } catch (NumberFormatException e2) {}
 		return s;
