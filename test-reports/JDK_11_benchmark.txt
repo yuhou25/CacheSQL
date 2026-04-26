@@ -1,0 +1,28 @@
+﻿JVM: Java HotSpot(TM) 64-Bit Server VM 11.0.17+10-LTS-269
+Java: 11.0.17
+OS: Windows 11 amd64
+CPU cores: 16
+Max heap: 7892 MB
+
+Loaded config from D:\work\myMemoryDB\config.properties
+Loaded 10000 rows into 'bench' table
+
+========================================
+  Part 1: Embedded Performance
+========================================
+
+java.exe : Exception in thread "main" java.lang.NoClassDefFoundError: net/sf/jsqlparser/JSQLParserException
+所在位置 D:\work\myMemoryDB\run-all-tests.ps1:104 字符: 20
++ ... nchOutput = & "$javaHome\bin\java.exe" -cp $fullCp com.browise.FullBe ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Exception in th...ParserException:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+	at com.browise.FullBenchmark.warmupEmbedded(FullBenchmark.java:106)
+	at com.browise.FullBenchmark.main(FullBenchmark.java:55)
+Caused by: java.lang.ClassNotFoundException: net.sf.jsqlparser.JSQLParserException
+	at java.base/jdk.internal.loader.BuiltinClassLoader.loadClass(BuiltinClassLoader.java:581)
+	at java.base/jdk.internal.loader.ClassLoaders$AppClassLoader.loadClass(ClassLoaders.java:178)
+	at java.base/java.lang.ClassLoader.loadClass(ClassLoader.java:521)
+	... 2 more
+

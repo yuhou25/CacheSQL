@@ -1,0 +1,59 @@
+# CacheSQL configuration
+
+# Mode: embed (embedded only, no HTTP), all (embedded + HTTP server)
+server.mode=all
+server.port=8080
+
+# ---- HTTP Engine ----
+# Engine: jdk (built-in BIO, zero-dependency) | undertow (NIO, higher QPS)
+server.http.engine=jdk
+
+# BIO (JDK HttpServer) parameters:
+server.http.threads=0
+server.http.backlog=0
+
+# NIO (Undertow) parameters:
+server.http.ioThreads=0
+server.http.workerThreads=0
+server.http.bufferSize=16384
+server.http.maxEntitySize=1048576
+
+# ---- Database (choose one, uncomment) ----
+# === Oracle ===
+#db.driver=oracle.jdbc.driver.OracleDriver
+#db.url=jdbc:oracle:thin:@localhost:1521:orcl
+#db.username=user
+#db.password=pass
+
+# === MySQL ===
+#db.driver=com.mysql.cj.jdbc.Driver
+#db.url=jdbc:mysql://localhost:3306/mydb?useSSL=false&characterEncoding=utf8
+#db.username=root
+#db.password=123456
+
+# === PostgreSQL ===
+#db.driver=org.postgresql.Driver
+#db.url=jdbc:postgresql://localhost:5432/mydb
+#db.username=postgres
+#db.password=postgres
+
+# Connection pool
+db.pool.maxActive=5
+db.pool.timeout=10000
+
+# Auto refresh interval (milliseconds, 0=disabled)
+cache.refreshInterval=0
+
+# ---- Replication ----
+# Role: standalone | master | slave
+server.role=standalone
+# server.master.url=http://192.168.1.10:8080
+server.sync.port=19091
+# server.slaves=http://192.168.1.11:19091,http://192.168.1.12:19091
+server.oplog.capacity=10000
+server.heartbeat.interval=5000
+
+# ---- Table definitions ----
+# cache.table.MY_TABLE.sql=SELECT * FROM MY_TABLE
+# cache.table.MY_TABLE.indexes=COL_A,COL_B,COL_A+COL_B
+# cache.table.MY_TABLE.params=value1,value2

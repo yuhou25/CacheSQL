@@ -1,0 +1,2 @@
+﻿Loaded config from D:\work\myMemoryDB\config.properties
+
