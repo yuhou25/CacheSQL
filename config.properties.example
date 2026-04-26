@@ -57,3 +57,8 @@ server.heartbeat.interval=5000
 # cache.table.MY_TABLE.sql=SELECT * FROM MY_TABLE
 # cache.table.MY_TABLE.indexes=COL_A,COL_B,COL_A+COL_B
 # cache.table.MY_TABLE.params=value1,value2
+
+# ---- Client routing (cachesql client) ----
+# cachesql.group.insurance.master=http://192.168.1.10:8080
+# cachesql.group.insurance.slaves=http://192.168.1.11:8080,http://192.168.1.12:8080
+# cachesql.group.insurance.tables=KCA2,KCA3

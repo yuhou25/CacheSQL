@@ -142,6 +142,38 @@ java -Xms8g -Xmx8g \
      -jar CacheSQL-1.0-SNAPSHOT.jar
 ```
 
+## Client (multi-group routing)
+
+For horizontal scaling across table groups, use the `CacheSQLClient`:
+
+```properties
+# cachesql.properties
+cachesql.group.insurance.master=http://192.168.1.10:8080
+cachesql.group.insurance.slaves=http://192.168.1.11:8080,http://192.168.1.12:8080
+cachesql.group.insurance.tables=KCA2,KCA3
+
+cachesql.group.medical.master=http://192.168.1.20:8080
+cachesql.group.medical.slaves=http://192.168.1.21:8080
+cachesql.group.medical.tables=YB01,YB02
+```
+
+```java
+import com.browise.client.CacheSQLClient;
+
+CacheSQLClient client = new CacheSQLClient("cachesql.properties");
+
+// Read — auto-routes to table's group, random master/slave
+List<Map<String, Object>> rows = client.get("KCA2", "AAC001", "12345");
+rows = client.query("SELECT * FROM YB01 WHERE ID > 1000");
+
+// Write — always routes to master
+Map<String, Object> data = new HashMap<>();
+data.put("AAC002", "张三");
+client.insert("KCA2", "AAC001", "99999", data);
+client.update("KCA2", "AAC001", "99999", data);
+client.delete("KCA2", "AAC001", "99999");
+```
+
 ## Requirements
 
 - **JDK 8+** (verified on 8/11/17/21)
