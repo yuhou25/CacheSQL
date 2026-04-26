@@ -13,3 +13,16 @@ cp.txt
 *.nar
 hs_err_pid*
 replay_pid*
+*.zip
+CacheSQL_Project_State.md
+CONTEXT.md
+production-readiness.md
+test-reports/
+test-report.md
+config-master.properties
+config-slave.properties
+myMemoryDB.iml
+.gitattributes
+run-all-tests.ps1
+run-benchmarks.ps1
+test-replication.ps1
