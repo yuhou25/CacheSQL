@@ -195,7 +195,87 @@ ReplicationManager.insert/update/delete()
 
 ---
 
-## 6. 多数据库支持
+## 6. 客户端路由（多组扩展）
+
+当单机内存不足以覆盖所有表时，按表分组到多个 CacheSQL 集群，各集群独立主从复制。
+
+### 6.1 架构
+
+```
+App → CacheSQLClient（按表名路由）
+           │
+      ┌────┼────┐
+      ▼    ▼    ▼
+    group1  group2  group3
+    (社保)  (医保)  (就业)
+    KCA2    YB01    JY01
+    KCA3    YB02    JY02
+```
+
+### 6.2 配置
+
+```properties
+cachesql.group.insurance.master=http://192.168.1.10:8080
+cachesql.group.insurance.slaves=http://192.168.1.11:8080,http://192.168.1.12:8080
+cachesql.group.insurance.tables=KCA2,KCA3
+
+cachesql.group.medical.master=http://192.168.1.20:8080
+cachesql.group.medical.slaves=http://192.168.1.21:8080
+cachesql.group.medical.tables=YB01,YB02
+```
+
+### 6.3 使用
+
+```java
+CacheSQLClient client = new CacheSQLClient("cachesql.properties");
+List<Map<String, Object>> rows = client.get("KCA2", "AAC001", "12345");
+client.insert("KCA2", "AAC001", "99999", data);
+```
+
+读：自动路由 + 随机选 master/slave。写：自动路由到 master。
+
+### 6.4 设计原理
+
+**不分片**——每组内表是全量，单机装不下才按表分组。组间不做分片合并，不引入分布式复杂度。
+
+**无转发**——请求直连目标组，应用端路由不做中间跳，零额外延迟。
+
+**分区表适配**——对关系库分区表，用 SQL 参数限定加载子集：
+
+```properties
+cache.table.CALL_RECORDS.sql=SELECT * FROM CALL_RECORDS WHERE MONTH = ?
+cache.table.CALL_RECORDS.params=202604
+```
+
+客户端只需修改参数值即可切换分区，不需要理解集群拓扑。
+
+---
+
+## 7. 设计原则
+
+### 不做的事
+
+| 不做 | 理由 |
+|------|------|
+| **JOIN** | JOIN 的 O(n²) 复杂度是数学下限，Oracle 都翻车，缓存层不该碰 |
+| **分片** | 单机能装下就不分，分片引入的分布式复杂度远超收益 |
+| **持久化** | 数据源在关系库，缓存只做加速层，丢了 reload 即可 |
+| **服务端路由转发** | 多一跳延迟翻倍，不如应用端直连 |
+| **全功能 SQL** | 只支持 SELECT + 索引可用条件，缓存层不是查询引擎 |
+
+### 做的事
+
+| 做 | 理由 |
+|----|------|
+| 单表点查询 | B+Tree 稳定几十微秒，读多写少场景最优解 |
+| 主从复制 | OpLog 环形缓冲 + 异步广播，够用且简单 |
+| 读无锁 | 写方法 synchronized，读全无锁，320 万 QPS 吞吐 |
+| 配置驱动 | SQL、索引、参数全部来自 config.properties，零硬编码 |
+| 客户端路由 | 3 行 HashMap 搞定多组扩展，不依赖中间件 |
+
+---
+
+## 8. 多数据库支持
 
 | 数据库 | 驱动 | JDBC URL 示例 |
 |--------|------|---------------|
@@ -207,7 +287,7 @@ ReplicationManager.insert/update/delete()
 
 ---
 
-## 7. 限制说明
+## 9. 限制说明
 
 | 项目 | 限制 |
 |------|------|
