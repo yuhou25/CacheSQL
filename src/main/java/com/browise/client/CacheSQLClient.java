@@ -14,7 +14,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
-import java.util.Random;
 
 /**
  * CacheSQL 客户端工具包 — 按表名自动路由到对应组，读负载均衡到主/从节点
@@ -33,6 +32,8 @@ import java.util.Random;
 public class CacheSQLClient {
 
 	private final Map<String, TableGroup> tableToGroup = new LinkedHashMap<String, TableGroup>();
+	private int connectTimeout = 5000;
+	private int readTimeout = 10000;
 
 	/**
 	 * 从配置文件加载路由规则
@@ -47,6 +48,8 @@ public class CacheSQLClient {
 	 * Load routing rules from Properties object
 	 */
 	public CacheSQLClient(Properties props) {
+		connectTimeout = getInt(props, "cachesql.connectTimeout", 5000);
+		readTimeout = getInt(props, "cachesql.readTimeout", 10000);
 		for (String key : props.stringPropertyNames()) {
 			if (!key.endsWith(".tables")) continue;
 			String groupName = key.substring("cachesql.group.".length(), key.length() - ".tables".length());
@@ -54,7 +57,7 @@ public class CacheSQLClient {
 			String slavesStr = props.getProperty("cachesql.group." + groupName + ".slaves", "").trim();
 			if (master.isEmpty()) continue;
 			String[] slaves = slavesStr.isEmpty() ? new String[0] : slavesStr.split(",");
-			TableGroup group = new TableGroup(master, slaves);
+			TableGroup group = new TableGroup(master, trimAll(slaves));
 			for (String table : props.getProperty(key).split(",")) {
 				String t = table.trim();
 				if (!t.isEmpty()) tableToGroup.put(t, group);
@@ -68,24 +71,21 @@ public class CacheSQLClient {
 	 * GET /cache/get — 索引等值查询
 	 */
 	public List<Map<String, Object>> get(String table, String column, Object value) throws Exception {
-		String url = buildGetUrl(table, column, value, "/cache/get");
-		return parseRows(httpGet(url));
+		return parseRows(tryReadUrls(buildGetUrls(table, column, value, "/cache/get")));
 	}
 
 	/**
 	 * GET /cache/less — 小于查询
 	 */
 	public List<Map<String, Object>> getLessThen(String table, String column, Object value) throws Exception {
-		String url = buildGetUrl(table, column, value, "/cache/less");
-		return parseRows(httpGet(url));
+		return parseRows(tryReadUrls(buildGetUrls(table, column, value, "/cache/less")));
 	}
 
 	/**
 	 * GET /cache/more — 大于查询
 	 */
 	public List<Map<String, Object>> getMoreThen(String table, String column, Object value) throws Exception {
-		String url = buildGetUrl(table, column, value, "/cache/more");
-		return parseRows(httpGet(url));
+		return parseRows(tryReadUrls(buildGetUrls(table, column, value, "/cache/more")));
 	}
 
 	/**
@@ -93,12 +93,12 @@ public class CacheSQLClient {
 	 */
 	public List<Map<String, Object>> getRange(String table, String column, Object from, Object to) throws Exception {
 		TableGroup group = findGroup(table);
-		String url = group.pickReadUrl() + "/cache/range"
-			+ "?table=" + URLEncoder.encode(table, "UTF-8")
-			+ "&column=" + URLEncoder.encode(column, "UTF-8")
-			+ "&from=" + URLEncoder.encode(String.valueOf(from), "UTF-8")
-			+ "&to=" + URLEncoder.encode(String.valueOf(to), "UTF-8");
-		return parseRows(httpGet(url));
+		String path = "/cache/range"
+			+ "?table=" + encode(table)
+			+ "&column=" + encode(column)
+			+ "&from=" + encode(String.valueOf(from))
+			+ "&to=" + encode(String.valueOf(to));
+		return parseRows(tryReadUrls(group.allReadUrls(path)));
 	}
 
 	/**
@@ -106,59 +106,63 @@ public class CacheSQLClient {
 	 */
 	public List<Map<String, Object>> query(String sql) throws Exception {
 		TableGroup group = firstGroup();
-		String url = group.pickReadUrl() + "/cache/query?sql=" + URLEncoder.encode(sql, "UTF-8");
-		return parseRows(httpGet(url));
+		String path = "/cache/query?sql=" + encode(sql);
+		return parseRows(tryReadUrls(group.allReadUrls(path)));
 	}
 
 	/* ========== Write API ========== */
 
 	/**
 	 * POST /cache/insert — 插入行（upsert 语义）
+	 * 优先发 master，失败自动切换到组内其他节点
 	 */
 	public boolean insert(String table, String column, Object value, Map<String, Object> data) throws Exception {
 		TableGroup group = findGroup(table);
-		return httpPost(group.getWriteUrl() + "/cache/insert",
+		return execWrite(group.allUrls("/cache/insert"),
 			buildForm(table, column, value, data));
 	}
 
 	/**
 	 * POST /cache/update — 更新行
+	 * 优先发 master，失败自动切换到组内其他节点
 	 */
 	public boolean update(String table, String column, Object value, Map<String, Object> data) throws Exception {
 		TableGroup group = findGroup(table);
-		return httpPost(group.getWriteUrl() + "/cache/update",
+		return execWrite(group.allUrls("/cache/update"),
 			buildForm(table, column, value, data));
 	}
 
 	/**
 	 * POST /cache/delete — 删除行
+	 * 优先发 master，失败自动切换到组内其他节点
 	 */
 	public boolean delete(String table, String column, Object value) throws Exception {
 		TableGroup group = findGroup(table);
-		return httpPost(group.getWriteUrl() + "/cache/delete",
+		return execWrite(group.allUrls("/cache/delete"),
 			buildForm(table, column, value, null));
 	}
 
 	/* ========== Internal ========== */
 
-	private String buildGetUrl(String table, String column, Object value, String path) throws Exception {
+	private String[] buildGetUrls(String table, String column, Object value, String path) throws Exception {
 		TableGroup group = findGroup(table);
-		return group.pickReadUrl() + path
-			+ "?table=" + URLEncoder.encode(table, "UTF-8")
-			+ "&column=" + URLEncoder.encode(column, "UTF-8")
-			+ "&value=" + URLEncoder.encode(String.valueOf(value), "UTF-8");
+		String query = path
+			+ "?table=" + encode(table)
+			+ "&column=" + encode(column)
+			+ "&value=" + encode(String.valueOf(value));
+		return group.allReadUrls(query);
 	}
 
 	private String buildForm(String table, String column, Object value, Map<String, Object> data) throws Exception {
 		StringBuilder sb = new StringBuilder();
-		sb.append("table=").append(URLEncoder.encode(table, "UTF-8"));
-		sb.append("&column=").append(URLEncoder.encode(column, "UTF-8"));
-		sb.append("&value=").append(URLEncoder.encode(String.valueOf(value), "UTF-8"));
+		sb.append("table=").append(encode(table));
+		sb.append("&column=").append(encode(column));
+		sb.append("&value=").append(encode(String.valueOf(value)));
 		if (data != null) {
 			for (Map.Entry<String, Object> entry : data.entrySet()) {
 				if (entry.getValue() != null) {
-					sb.append("&").append(URLEncoder.encode(entry.getKey(), "UTF-8"))
-					  .append("=").append(URLEncoder.encode(String.valueOf(entry.getValue()), "UTF-8"));
+					sb.append("&").append(encode(entry.getKey()))
+					  .append("=").append(encode(String.valueOf(entry.getValue())));
 				}
 			}
 		}
@@ -177,23 +181,47 @@ public class CacheSQLClient {
 	}
 
 	private String httpGet(String url) throws Exception {
-		HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
-		conn.setConnectTimeout(5000);
-		conn.setReadTimeout(10000);
-		int code = conn.getResponseCode();
-		InputStream is = code < 400 ? conn.getInputStream() : conn.getErrorStream();
-		String body = readStream(is);
-		conn.disconnect();
-		if (code >= 400) throw new RuntimeException("HTTP " + code + ": " + body);
-		return body;
+		return tryReadUrls(new String[]{url});
+	}
+
+	private String tryReadUrls(String[] urls) throws Exception {
+		String lastErr = null;
+		for (String url : urls) {
+			try {
+				HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+				conn.setConnectTimeout(connectTimeout);
+				conn.setReadTimeout(readTimeout);
+				int code = conn.getResponseCode();
+				InputStream is = code < 400 ? conn.getInputStream() : conn.getErrorStream();
+				String body = readStream(is);
+				conn.disconnect();
+				if (code >= 400) throw new RuntimeException("HTTP " + code + ": " + body);
+				return body;
+			} catch (Exception e) {
+				lastErr = e.getMessage();
+			}
+		}
+		throw new RuntimeException("All nodes failed, last error: " + lastErr);
+	}
+
+	private boolean execWrite(String[] urls, String body) throws Exception {
+		String lastErr = null;
+		for (String url : urls) {
+			try {
+				return httpPost(url, body);
+			} catch (Exception e) {
+				lastErr = e.getMessage();
+			}
+		}
+		throw new RuntimeException("All nodes failed for write, last error: " + lastErr);
 	}
 
 	private boolean httpPost(String url, String body) throws Exception {
 		HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
 		conn.setRequestMethod("POST");
 		conn.setDoOutput(true);
-		conn.setConnectTimeout(5000);
-		conn.setReadTimeout(10000);
+		conn.setConnectTimeout(connectTimeout);
+		conn.setReadTimeout(readTimeout);
 		conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
 		OutputStream os = conn.getOutputStream();
 		os.write(body.getBytes("UTF-8"));
@@ -214,8 +242,6 @@ public class CacheSQLClient {
 		is.close();
 		return baos.toString("UTF-8");
 	}
-
-	/* ========== JSON Parser ========== */
 
 	/**
 	 * 从服务器响应中解析 data 数组
@@ -320,6 +346,21 @@ public class CacheSQLClient {
 		return s;
 	}
 
+	private String encode(String s) throws Exception {
+		return URLEncoder.encode(s, "UTF-8");
+	}
+
+	private static int getInt(Properties props, String key, int def) {
+		String v = props.getProperty(key);
+		if (v == null) return def;
+		try { return Integer.parseInt(v.trim()); } catch (NumberFormatException e) { return def; }
+	}
+
+	private static String[] trimAll(String[] arr) {
+		for (int i = 0; i < arr.length; i++) arr[i] = arr[i].trim();
+		return arr;
+	}
+
 	private static Properties loadProperties(String path) throws IOException {
 		Properties props = new Properties();
 		FileInputStream fis = new FileInputStream(path);
@@ -336,11 +377,30 @@ public class CacheSQLClient {
 			this.master = master;
 			this.slaves = slaves;
 		}
-		String pickReadUrl() {
-			if (slaves.length == 0) return master;
-			return random() ? master : slaves[(int)(Math.random() * slaves.length)];
+		/** 读路径：所有节点打乱顺序，负载均衡 + 自动容灾 */
+		/** Read path: all nodes shuffled for load balance + failover */
+		String[] allReadUrls(String path) {
+			String[] urls = new String[1 + slaves.length];
+			int i = 0;
+			urls[i++] = master + path;
+			for (String slave : slaves) urls[i++] = slave.trim() + path;
+			shuffle(urls);
+			return urls;
 		}
-		String getWriteUrl() { return master; }
-		private boolean random() { return Math.random() < 0.5; }
+		/** 写路径：master 优先，master 失败再试 slave */
+		/** Write path: master first, fallback to slaves */
+		String[] allUrls(String path) {
+			String[] urls = new String[1 + slaves.length];
+			int i = 0;
+			urls[i++] = master + path;
+			for (String slave : slaves) urls[i++] = slave.trim() + path;
+			return urls;
+		}
+		private static void shuffle(String[] arr) {
+			for (int i = arr.length - 1; i > 0; i--) {
+				int j = (int)(Math.random() * (i + 1));
+				String tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp;
+			}
+		}
 	}
 }
