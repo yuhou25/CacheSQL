@@ -2,7 +2,7 @@
 
 **项目**: CacheSQL — 内存缓存数据库中间件  
 **版本**: 1.0-SNAPSHOT  
-**测试日期**: 2026-04-26（更新 v2）
+**测试日期**: 2026-04-29（更新 v3）
 **测试环境**: Windows 10 / JDK 1.8.0_152 / 8核16线程 CPU / 8GB JVM
 
 ---
@@ -13,8 +13,8 @@
 |------|------|
 | 源文件数 | 21 个 |
 | 源码行数 | 5,000+ 行 |
-| 测试文件数 | 18 个 |
-| 测试代码行 | 1,500+ 行 |
+| 测试文件数 | 21 个 |
+| 测试代码行 | 2,000+ 行 |
 | JAR 包大小 | 80 KB（JDK）/ +1.2MB（含Undertow） |
 | JDK 兼容版本 | 8 / 11 / 17 / 21 |
 | 外部依赖 | jsqlparser 4.9 + JDBC 驱动 + Undertow 2.2.28（可选） |
@@ -39,13 +39,16 @@
 
 | 测试类 | 用例数 | 通过 | 失败 | 耗时 |
 |--------|--------|------|------|------|
-| BPTreeTest | 15 | 15 | 0 | 0.107s |
-| SqlQueryEngineTest | 11 | 11 | 0 | 0.101s |
+| BPTreeTest | 15 | 15 | 0 | 0.105s |
+| SqlQueryEngineTest | 11 | 11 | 0 | 0s |
 | RowSetTest | 9 | 9 | 0 | 0.001s |
-| InsertUpdateDeleteTest | 8 | 8 | 0 | 0.003s |
-| ReplicationTest | 8 | 8 | 0 | 0.003s |
-| ConcurrencyTest | 2 | 2 | 0 | 0.104s |
-| **合计** | **53** | **53** | **0** | **0.319s** |
+| InsertUpdateDeleteTest | 8 | 8 | 0 | 0.001s |
+| ReplicationTest | 8 | 8 | 0 | 0.071s |
+| ConcurrencyTest | 2 | 2 | 0 | 0.062s |
+| CacheSQLClientTest | 10 | 10 | 0 | 4.157s |
+| FailoverTest | 13 | 13 | 0 | 26.86s |
+| ReplicationSyncTest | 10 | 10 | 0 | 16.35s |
+| **合计** | **86** | **86** | **0** | **47.6s** |
 
 ### 2.2 B+ 树测试（15 项）
 
@@ -132,11 +135,120 @@
 | testConcurrentReads | 16 线程 × 1000 次并发读（16,000 次） |
 | testConcurrentRangeQueries | 8 线程 × 100 次并发范围查询 |
 
+### 2.7 CacheSQLClient 客户端集成测试（10 项）
+
+客户端工具包 — 启动两个真实 HTTP 服务（port 19091/19092），验证多组路由。
+Client toolkit — starts two real HTTP servers, validates multi-group routing.
+
+| 用例 | 验证内容 |
+|------|---------|
+| testGetRoutesToCorrectGroup | GET /cache/get — 按表名路由到正确组 |
+| testGetLessRoutesToCorrectGroup | GET /cache/less — 小于查询路由 |
+| testGetMoreRoutesToCorrectGroup | GET /cache/more — 大于查询路由 |
+| testRangeRoutesToCorrectGroup | GET /cache/range — 范围查询路由 |
+| testInsertThenGet | POST /cache/insert — 插入后查询验证 |
+| testUpdateThenGet | POST /cache/update — 更新后查询验证 |
+| testDeleteThenGet | POST /cache/delete — 删除后查询验证 |
+| testQueryReturnsResults | GET /cache/query — SQL 查询 |
+| testUnknownTableThrows | 未知表名抛 IllegalArgumentException |
+| testTablesAreSeparateByGroup | 两组数据隔离，互不可见 |
+
 ---
 
-## 3. 主从复制集成测试
+## 3. CacheSQLClient Failover 容灾测试
 
 ### 3.1 测试方法
+
+启动 master + slave 两组真实 HTTP 服务（port 19101/19102），配置同一组 `cachesql.group.test`。测试超时配置、读容灾（随机负载均衡）、写容灾（master优先，失败切slave）。
+
+Starts real master+slave HTTP servers in one group. Tests timeout config, read failover (shuffled load balance), write failover (master first, fallback to slave).
+
+### 3.2 超时配置验证（1 项）
+
+| 用例 | 验证内容 | 结果 |
+|------|---------|------|
+| testTimeoutConfig | connectTimeout=1234ms, readTimeout=5678ms，正常读取 | ✅ |
+
+### 3.3 读容灾验证（7 项）
+
+| 用例 | 场景 | 结果 |
+|------|------|------|
+| testReadBothAlive | master + slave 都在线，正常读取 | ✅ |
+| testReadFailoverWhenMasterDown | master 停止，读自动切到 slave | ✅ |
+| testReadFailoverWhenSlaveDown | slave 停止，读自动切到 master | ✅ |
+| testReadAllDown | master + slave 都停止，抛 RuntimeException | ✅ |
+| testRangeFailover | master 停止，range 查询走 slave | ✅ |
+| testLessThenFailover | slave 停止，less 查询走 master | ✅ |
+| testMoreThenFailover | slave 停止，more 查询走 master | ✅ |
+
+读路径使用 Fisher-Yates shuffle 随机打乱节点顺序，实现负载均衡；任一节点失败自动切换下一节点，全部失败才抛异常。
+
+Read path uses Fisher-Yates shuffle for random load balance; auto-failover on node failure, exception only when all nodes fail.
+
+### 3.4 写容灾验证（5 项）
+
+| 用例 | 场景 | 结果 |
+|------|------|------|
+| testWriteMasterAlive | master 在线，写成功 | ✅ |
+| testWriteFailoverToSlave | master 停止，写自动切到 slave | ✅ |
+| testUpdateFailoverToSlave | master 停止，update 写到 slave，重启 master 后数据可见 | ✅ |
+| testDeleteFailoverToSlave | master 停止，delete 通过 slave 执行 | ✅ |
+| testWriteAllDown | master + slave 都停止，写抛 RuntimeException | ✅ |
+
+写路径 master 排首位（优先发送），master 失败后按顺序切 slave。发给 slave 时 slave 会通过 ReplicationManager 转发给 master（多一次转发）。
+
+Write path puts master first (priority), falls back to slave on failure. Slave forwards to master via ReplicationManager (extra forwarding hop).
+
+---
+
+## 4. ReplicationManager pendingQueue 缓冲重放测试
+
+### 4.1 测试方法
+
+通过反射调用 `forwardOrBuffer()` 私有方法，使用 mock HTTP server 模拟 master。验证 slave 模式下写操作的缓冲与重放机制。
+
+Uses reflection to call private `forwardOrBuffer()`, with mock HTTP server as master. Tests slave-mode write buffering and replay mechanism.
+
+> **注意**：ROLE 为 `static final`，测试环境为 standalone 模式。本测试通过反射直接验证 ReplicationManager 内部缓冲/重放机制。端到端主从同步测试见第 5 节。
+
+### 4.2 测试结果（10 项）
+
+| 用例 | 验证内容 | 结果 |
+|------|---------|------|
+| testPendingQueueEmpty | 初始状态：queue 为空，master 可达 | ✅ |
+| testClearPendingResetsState | clearPending() 清空队列并重置 masterReachable | ✅ |
+| testDirectForwardSuccess | master 在线 → 直接转发，queue 不积压 | ✅ |
+| testBufferWhenMasterDown | master 不可达 → 缓冲到 pendingQueue | ✅ |
+| testBufferMultipleOps | 连续 5 次写全部缓冲 | ✅ |
+| testFlushPendingToRecoveredMaster | master 恢复 → flush 成功，queue 清零，数据到达 master | ✅ |
+| testFlushMultiplePendingOps | 3 个缓冲操作全部重放到恢复的 master | ✅ |
+| testFlushStopsOnMasterStillDown | master 仍未恢复 → queue 不丢失，保持 3 条 | ✅ |
+| testUpdateBufferAndFlush | update 操作缓冲+重放，转发 body 含 update 路径 | ✅ |
+| testDeleteBufferAndFlush | delete 操作缓冲+重放 | ✅ |
+
+### 4.3 数据流验证
+
+| 场景 | 写入路径 | 验证方式 |
+|------|---------|---------|
+| master 可达 | slave → HTTP POST /cache/insert → master 执行 | mock master 收到 1 次请求 |
+| master 不可达 | slave → pendingQueue 缓冲 | queue 计数 = N |
+| master 恢复 | pendingFlushThread → flushPending() → FIFO 重放 | queue 清零，mock master 收到 N 次请求 |
+| master 仍不可达 | flushPending() 首次失败即停止 | queue 不丢失 |
+
+### 4.4 已知限制与兜底
+
+| 限制项 | 说明 | 兜底策略 |
+|--------|------|---------|
+| pendingQueue 纯内存 | slave 进程崩溃时缓冲数据丢失 | 缓存层，可从关系数据库 reload |
+| 容量上限 | 默认 5000 条（server.pending.capacity），超出丢弃最早的 | 读多写少场景，5000 条足够 |
+| 重放延迟 | pendingFlushThread 默认 2 秒间隔 | 可配置 server.pending.flush.interval |
+| 本质模型 | 双写（CacheSQL + 关系数据库），CacheSQL 为缓存加速层 | 关系数据库为权威数据源 |
+
+---
+
+## 5. 主从复制集成测试
+
+### 5.1 测试方法
 
 使用 `test-replication.ps1` 自动化脚本：
 - 启动 Master (port 8080) 和 Slave (port 8081) 两个独立 JVM 进程
@@ -144,7 +256,7 @@
 - 执行 6 项端到端测试
 - 测试完毕自动清理进程
 
-### 3.2 测试结果
+### 5.2 测试结果
 
 ```
 === Test 1: Insert on Master, Slave syncs ===
@@ -180,7 +292,7 @@
   Result: PASS
 ```
 
-### 3.3 数据流验证
+### 5.3 数据流验证
 
 | 场景 | 写入路径 | 验证方式 |
 |------|---------|---------|
@@ -191,7 +303,7 @@
 
 ---
 
-## 4. 测试过程中发现并修复的 Bug
+## 6. 测试过程中发现并修复的 Bug
 
 | # | 严重级别 | 问题描述 | 修复方案 | 发现阶段 |
 |---|---------|---------|---------|---------|
@@ -204,7 +316,7 @@
 
 ---
 
-## 5. 已知限制
+## 7. 已知限制
 
 | 限制项 | 说明 | 影响 |
 |--------|------|------|
@@ -215,9 +327,9 @@
 
 ---
 
-## 6. 性能测试
+## 8. 性能测试
 
-### 6.1 测试环境
+### 8.1 测试环境
 
 | 项目 | 配置 |
 |------|------|
@@ -230,7 +342,7 @@
 
 > **线程与 CPU 的关系**：本机物理 8 核，16 线程为超线程。生产推荐 **8 线程**（等于物理核数），超线程对 IO 密集型 HTTP 场景提升有限。
 
-### 6.2 内嵌模式性能
+### 8.2 内嵌模式性能
 
 | 测试项 | QPS | 延迟 (us/op) | 说明 |
 |--------|-----|-------------|------|
@@ -245,7 +357,7 @@
 
 > **rowSet 读锁优化**：去除了 `rowSet.get()/size()/count()` 等 7 个读方法的 `synchronized`，16 线程 `get()` 从 154 万提升至 **320 万 QPS（+108%）**。写方法保留 `synchronized` 不变。
 
-### 6.3 HTTP 模式性能 — BIO vs NIO 引擎对比
+### 8.3 HTTP 模式性能 — BIO vs NIO 引擎对比
 
 #### 测试配置
 
@@ -307,7 +419,7 @@
 
 > **NIO 优势集中在 4~16 线程区间**，因为 NIO 的 IO 多路复用在中等并发下效率最高。32 线程时瓶颈转移至 B+ 树写锁竞争，HTTP 层不再是瓶颈，NIO 优势缩小。
 
-### 6.4 性能结论
+### 8.4 性能结论
 
 | 模式 | 操作 | 峰值 QPS | 延迟 |
 |------|------|---------|------|
@@ -328,7 +440,7 @@
 
 ---
 
-## 7. 测试覆盖率矩阵
+## 9. 测试覆盖率矩阵
 
 | 模块 | 单元测试 | 集成测试 | 并发测试 |
 |------|---------|---------|---------|
@@ -336,6 +448,11 @@
 | SQL 查询引擎 | ✅ 11 项 | — | — |
 | 内存表 (CRUD) | ✅ 17 项 | — | — |
 | Row 存储 | ✅ 9 项 | — | — |
+| CacheSQLClient 路由 | — | ✅ 10 项 | — |
+| CacheSQLClient 读容灾 | — | ✅ 7 项 | — |
+| CacheSQLClient 写容灾 | — | ✅ 5 项 | — |
+| CacheSQLClient 超时配置 | — | ✅ 1 项 | — |
+| ReplicationManager 缓冲重放 | — | ✅ 10 项 | — |
 | 主从复制 - 写转发 | ✅ (角色) | ✅ Test 2 | — |
 | 主从复制 - 广播同步 | — | ✅ Test 1 | — |
 | 主从复制 - 幂等性 | ✅ 3 项 | ✅ Test 3 | — |
@@ -349,12 +466,14 @@
 
 ---
 
-## 8. 结论
+## 10. 结论
 
-- **53 项单元测试**全部通过，0 失败，总耗时 0.319 秒
-- **6 项集成测试**全部通过，覆盖主从复制完整生命周期
-- **30 项引擎对比测试**（BIO vs NIO × 5 线程数 × 读取3场景 + 写入3场景），全部 0 fail
-- **性能测试**：内嵌读峰值 320 万 QPS（较旧版 154 万提升 108%），HTTP NIO 8线程读取 2.7~3.0 万 QPS
-- 测试过程中发现并修复 **6 个 Bug**（含 2 个高危：索引列值丢失 + toKeyForColumn 类型转换残留）
-- 新增优化：rowSet 读锁去除（7 个方法）、启动时自动加载配置表、Undertow ioThreads 配置修复
-- 产品核心功能（B+ 树索引、SQL 查询、主从复制、故障缓冲与恢复、双引擎切换）**均已验证可用**
+- **86 项自动化测试**全部通过（0 失败），覆盖单元测试、集成测试、容灾测试、并发测试
+- **10 项 CacheSQLClient 集成测试**：多组路由、CRUD 全覆盖
+- **13 项 Failover 容灾测试**：超时配置、读容灾（shuffle 负载均衡）、写容灾（master优先切slave）、全挂异常
+- **10 项 ReplicationManager 缓冲重放测试**：验证 pendingQueue 缓冲、FIFO 重放、master 恢复后数据同步
+- **6 项端到端主从复制测试**：覆盖 Master/Slave 双向写、幂等性、故障缓冲、恢复重放
+- **30 项引擎对比测试**（BIO vs NIO × 5 线程数 × 6 场景），全部 0 fail
+- **性能测试**：内嵌读峰值 320 万 QPS，HTTP NIO 8线程读取 2.7~3.0 万 QPS
+- 测试过程中发现并修复 **6 个 Bug**（含 2 个高危）
+- 产品核心功能（B+ 树索引、SQL 查询、客户端容灾、主从复制、故障缓冲与恢复、双引擎切换）**均已验证可用**
